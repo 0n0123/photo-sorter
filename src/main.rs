@@ -19,6 +19,9 @@ struct Args {
     /// Sorts latest to oldest order
     #[clap(long, default_value = "false")]
     desc: bool,
+    /// Revert renamed files
+    #[clap(short, long, default_value = "false")]
+    revert: bool,
 }
 
 fn main() -> Result<()> {
@@ -30,18 +33,31 @@ fn main() -> Result<()> {
         files.reverse();
     }
 
-    if args.test {
-        for (index, file) in files.iter().enumerate() {
-            println!(
-                "{:03} | {}",
-                index,
-                file.file_name().unwrap().to_string_lossy()
-            );
+    match (args.revert, args.test) {
+        // Revert
+        (true, _) => {
+            for file in files.iter() {
+                if let Err(e) = revert_file(file) {
+                    eprintln!("{e}");
+                }
+            }
         }
-    } else {
-        for (index, file) in files.iter().enumerate() {
-            if let Err(e) = rename_file(file, index) {
-                eprintln!("{e}");
+        // Rename, Test
+        (false, true) => {
+            for (index, file) in files.iter().enumerate() {
+                println!(
+                    "{:03} | {}",
+                    index,
+                    file.file_name().unwrap().to_string_lossy()
+                );
+            }
+        }
+        // Rename
+        (false, false) => {
+            for (index, file) in files.iter().enumerate() {
+                if let Err(e) = rename_file(file, index) {
+                    eprintln!("{e}");
+                }
             }
         }
     }
@@ -117,11 +133,36 @@ fn rename_file(file: &Path, index: usize) -> Result<()> {
 
     fs::rename(file, &to)
         .map_err(|_| anyhow!("Failed to rename file {}", file.to_string_lossy()))?;
-    
+
     println!(
         "Renamed: {} -> {}",
         file.file_name().unwrap().to_string_lossy(),
         to.to_string_lossy()
     );
+
+    Ok(())
+}
+
+fn revert_file(file: &Path) -> Result<()> {
+    let org = file.file_name().unwrap().to_string_lossy();
+    if &org[3..5] != "__" {
+        return Ok(())
+    }
+    
+    let new_name = &org[5..];
+
+    let parent = file.parent().unwrap();
+    let mut to = PathBuf::from(parent);
+    to.push(new_name);
+
+    fs::rename(file, &to)
+        .map_err(|_| anyhow!("Failed to revert file name {}", file.to_string_lossy()))?;
+
+    println!(
+        "Reverted: {} -> {}",
+        file.file_name().unwrap().to_string_lossy(),
+        to.to_string_lossy()
+    );
+
     Ok(())
 }
