@@ -1,4 +1,6 @@
 use anyhow::{anyhow, bail, Result};
+use clap::Parser;
+use cli::Args;
 use exif::{In, Tag};
 use std::{
     cmp::Ordering,
@@ -7,37 +9,41 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::Parser;
-
-#[derive(Parser)]
-struct Args {
-    /// Path to directory includes photos
-    dir: PathBuf,
-    #[clap(short, long, default_value = "false")]
-    /// Test mode that only shows order
-    test: bool,
-    /// Sorts latest to oldest order
-    #[clap(long, default_value = "false")]
-    desc: bool,
-    /// Revert renamed files
-    #[clap(short, long, default_value = "false")]
-    revert: bool,
-}
+mod cli;
 
 fn main() -> Result<()> {
     let args = Args::parse();
 
     let mut files = list_images(&args.dir)?;
-    files.sort_by(sort_by_time);
-    if args.desc {
-        files.reverse();
+
+    if !args.revert {
+        files.sort_by(sort_by_time);
+        if args.desc {
+            files.reverse();
+        }
     }
+
+    let prefix_len = get_prefix_len(files.len());
 
     match (args.revert, args.test) {
         // Revert
-        (true, _) => {
+        (true, false) => {
             for file in files.iter() {
-                if let Err(e) = revert_file(file) {
+                if let Err(e) = revert_file(file, args.delim.as_ref()) {
+                    eprintln!("{e}");
+                }
+            }
+        }
+        // Revert, Test
+        (true, true) => {
+            for file in files.iter() {
+                test_revert_file(file, args.delim.as_ref());
+            }
+        }
+        // Rename
+        (false, false) => {
+            for (index, file) in files.iter().enumerate() {
+                if let Err(e) = rename_file(file, index, prefix_len, args.delim.as_ref()) {
                     eprintln!("{e}");
                 }
             }
@@ -45,19 +51,7 @@ fn main() -> Result<()> {
         // Rename, Test
         (false, true) => {
             for (index, file) in files.iter().enumerate() {
-                println!(
-                    "{:03} | {}",
-                    index,
-                    file.file_name().unwrap().to_string_lossy()
-                );
-            }
-        }
-        // Rename
-        (false, false) => {
-            for (index, file) in files.iter().enumerate() {
-                if let Err(e) = rename_file(file, index) {
-                    eprintln!("{e}");
-                }
+                test_rename_file(file, index, prefix_len, args.delim.as_ref());
             }
         }
     }
@@ -65,7 +59,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-fn list_images(root: &Path) -> Result<Vec<PathBuf>> {
+fn list_images<P: AsRef<Path>>(root: P) -> Result<Vec<PathBuf>> {
     let files = match fs::read_dir(root) {
         Ok(files) => files.filter_map(|file| file.ok()),
         Err(_) => bail!("Failed to list files."),
@@ -122,10 +116,20 @@ fn sort_by_time(f1: &PathBuf, f2: &PathBuf) -> Ordering {
     }
 }
 
-fn rename_file(file: &Path, index: usize) -> Result<()> {
+fn test_rename_file(file: &Path, index: usize, prefix_len: usize, delim: &str) {
     let org = file.file_name().unwrap().to_string_lossy();
     let index = index + 1;
-    let new_name = format!("{index:03}__{org}");
+    let prefix = create_prefix(index, prefix_len);
+    let new_name = format!("{prefix}{delim}{org}");
+
+    println!("{org} -> {new_name}");
+}
+
+fn rename_file(file: &Path, index: usize, prefix_len: usize, delim: &str) -> Result<()> {
+    let org = file.file_name().unwrap().to_string_lossy();
+    let index = index + 1;
+    let prefix = create_prefix(index, prefix_len);
+    let new_name = format!("{prefix}{delim}{org}");
 
     let parent = file.parent().unwrap();
     let mut to = PathBuf::from(parent);
@@ -137,19 +141,34 @@ fn rename_file(file: &Path, index: usize) -> Result<()> {
     println!(
         "Renamed: {} -> {}",
         file.file_name().unwrap().to_string_lossy(),
-        to.to_string_lossy()
+        to.file_name().unwrap().to_string_lossy()
     );
 
     Ok(())
 }
 
-fn revert_file(file: &Path) -> Result<()> {
+fn test_revert_file(file: &Path, delim: &str) {
     let org = file.file_name().unwrap().to_string_lossy();
-    if &org[3..5] != "__" {
-        return Ok(())
+
+    match org.find(delim) {
+        Some(prefix_index) => {
+            let new_name = &org[prefix_index + 2..];
+            println!("{org} -> {new_name}");
+        }
+        None => {
+            println!("{org} is not renamed.");
+        }
     }
-    
-    let new_name = &org[5..];
+}
+
+fn revert_file(file: &Path, delim: &str) -> Result<()> {
+    let org = file.file_name().unwrap().to_string_lossy();
+
+    let Some(prefix_index) = org.find(delim) else {
+        println!("Not processed: {}", org);
+        return Ok(());
+    };
+    let new_name = &org[prefix_index + 2..];
 
     let parent = file.parent().unwrap();
     let mut to = PathBuf::from(parent);
@@ -161,8 +180,45 @@ fn revert_file(file: &Path) -> Result<()> {
     println!(
         "Reverted: {} -> {}",
         file.file_name().unwrap().to_string_lossy(),
-        to.to_string_lossy()
+        to.file_name().unwrap().to_string_lossy()
     );
 
     Ok(())
+}
+
+fn get_prefix_len(files_len: usize) -> usize {
+    let files_len = files_len.to_string();
+    files_len.len()
+}
+
+fn create_prefix(num: usize, len: usize) -> String {
+    let num = num.to_string();
+
+    if len < num.len() {
+        num
+    } else {
+        let mut prefix = String::new();
+        for _i in 0..(len - num.len()) {
+            prefix.push('0');
+        }
+        prefix.push_str(&num);
+        prefix
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_create_prefix() {
+        let actual = create_prefix(10, 3);
+        assert_eq!(actual, String::from("010"));
+
+        let actual = create_prefix(5, 3);
+        assert_eq!(actual, String::from("005"));
+
+        let actual = create_prefix(100, 2);
+        assert_eq!(actual, String::from("100"));
+    }
 }
