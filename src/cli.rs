@@ -1,4 +1,7 @@
-use std::{path::{Path, PathBuf}, str::FromStr};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+};
 
 use anyhow::bail;
 use clap::Parser;
@@ -10,6 +13,7 @@ pub struct DirPath(PathBuf);
 pub struct Delim(String);
 
 #[derive(Parser)]
+#[command(version)]
 pub struct Args {
     /// Path to directory includes photos
     pub dir: DirPath,
